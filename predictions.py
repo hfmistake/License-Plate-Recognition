@@ -31,6 +31,7 @@ class Prediction:
     def __init__(self, model, data: dict):
         self.model = model
         self.data = data
+        self.captured_ids = set()
 
     @staticmethod
     def check_gpu():
