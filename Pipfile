@@ -13,6 +13,8 @@ torch = {version = "*", index = "pytorch"}
 torchvision = {version = "*", index = "pytorch"}
 torchaudio = {version = "*", index = "pytorch"}
 ultralytics = "*"
+easyocr = "*"
+pytesseract = "*"
 
 [dev-packages]
 
