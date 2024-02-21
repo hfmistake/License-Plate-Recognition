@@ -1,3 +1,4 @@
+import time
 import cv2
 import numpy as np
 import torch
@@ -41,6 +42,7 @@ class Prediction:
         self.pre_trained_model = pre_treined_model
         self.data = data
         self.captured_ids = set()
+        self.last_capture = time.time()
         self.plate_model = plate_model
 
     @staticmethod
@@ -55,12 +57,16 @@ class Prediction:
     def is_point_inside_line(self, center_x, center_y, track_id):
         line_x1, line_y1, line_x2, line_y2 = self.data["line"]
         is_inside_line = line_x1 < center_x < line_x2 and line_y1 - 15 < center_y < line_y1 + 15
-
+        self.handle_capture_flush()
         if is_inside_line and track_id not in self.captured_ids:
             self.captured_ids.add(track_id)
             return True
 
         return False
+
+    def handle_capture_flush(self):
+        if time.time() - self.last_capture > 1:
+            self.captured_ids.clear()
 
     def draw_line(self, frame):
         cv2.line(frame, (self.data["line"][0], self.data["line"][1]),
