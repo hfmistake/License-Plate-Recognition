@@ -60,12 +60,13 @@ class Prediction:
         self.handle_capture_flush()
         if is_inside_line and track_id not in self.captured_ids:
             self.captured_ids.add(track_id)
+            self.last_capture = time.time()
             return True
 
         return False
 
     def handle_capture_flush(self):
-        if time.time() - self.last_capture > 1:
+        if time.time() - self.last_capture > 2:
             self.captured_ids.clear()
 
     def draw_line(self, frame):
