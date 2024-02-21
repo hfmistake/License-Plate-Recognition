@@ -4,34 +4,44 @@ import torch
 import uuid as uid
 from PIL import Image
 import pytesseract
+import easyocr
 
 
 def pre_process_plate_image(plate_image):
-    plate_image = cv2.resize(plate_image, (0, 0), fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
     plate_image = cv2.cvtColor(plate_image, cv2.COLOR_BGR2GRAY)
-    plate_image = cv2.threshold(plate_image, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
+    plate_image = cv2.threshold(plate_image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
     plate_image = cv2.medianBlur(plate_image, 3)
-    plate_image = cv2.GaussianBlur(plate_image, (3, 3), 0)
+    plate_image = cv2.resize(plate_image, (0, 0), fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
     return plate_image
 
 
+def tesseract_read(plate_image):
+    return pytesseract.image_to_string(plate_image,
+                                       config="--psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+
+
+def easy_ocr_read(plate_image):
+    reader = easyocr.Reader(['en'], gpu=True)
+    return reader.readtext(plate_image, detail=0, paragraph=True, batch_size=1, workers=0,
+                           allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+
+
 def extract_text_from_plate(plate_image, pre_processing=False):
-    config = "--psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
     plate_image = np.array(plate_image)
     if pre_processing:
         plate_image = pre_process_plate_image(plate_image)
     cv2.imshow("Plate", plate_image)
-    result = pytesseract.image_to_string(plate_image, config=config)
-    result = result.replace("\n", "")
+    result = tesseract_read(plate_image)
     if result:
         return result
 
 
 class Prediction:
-    def __init__(self, model, data: dict):
-        self.model = model
+    def __init__(self, plate_model, pre_treined_model, data: dict):
+        self.pre_trained_model = pre_treined_model
         self.data = data
         self.captured_ids = set()
+        self.plate_model = plate_model
 
     @staticmethod
     def check_gpu():
@@ -57,55 +67,78 @@ class Prediction:
                  (self.data["line"][2], self.data["line"][3]),
                  (88, 85, 232), 4)
 
+    def is_plate_inside_vehicle(self, plate_box, vehicle_box):
+        plate_center_x, plate_center_y = self.get_center_point(plate_box)
+        x1, y1, x2, y2 = self.get_coords(vehicle_box)
+        return x1 < plate_center_x < x2 and y1 < plate_center_y < y2
+
+    @staticmethod
+    def draw_center_point(frame, center_x, center_y):
+        cv2.circle(frame, (center_x, center_y), 5, (0, 255, 0), -1)
+
+    def draw_collision(self, original_frame, box):
+        vehicle_type = self.pre_trained_model.names[int(box.cls[0])]
+        plate_results = self.plate_model(original_frame)
+        for plate_result in plate_results:
+            boxes = plate_result.boxes
+            for plate_box in boxes:
+                if self.is_plate_inside_vehicle(plate_box, box):
+                    plate_x1, plate_y1, plate_x2, plate_y2 = self.get_coords(plate_box)
+                    plate_image = Image.fromarray(plate_result.orig_img[plate_y1:plate_y2, plate_x1:plate_x2])
+                    plate_text = extract_text_from_plate(plate_image, pre_processing=True)
+                    if not plate_text:
+                        plate_text = "Placa não identificada"
+                    cv2.putText(original_frame, f"Placa: {plate_text} Vehicle type: {vehicle_type}", (0, 200),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                1, (0, 255, 0), 2)
+        cv2.imshow("Capture", original_frame)
+
+    @staticmethod
+    def get_coords(box):
+        x1, y1, x2, y2 = map(int, box.xyxy[0])
+        return x1, y1, x2, y2
+
+    def get_center_point(self, box):
+        x1, y1, x2, y2 = self.get_coords(box)
+        width, height = x2 - x1, y2 - y1
+        center_x, center_y = x1 + width // 2, y1 + height // 2
+        return center_x, center_y
+
     def _process_frame(self, frame):
-        results = self.model.track(frame, classes=self.data["object_indices"], conf=0.6, iou=0.5, persist=True)
+        results = self.pre_trained_model.track(frame, classes=self.data["object_indices"], conf=0.6, iou=0.5,
+                                               persist=True)
         return self.draw_visualization_elements(results[0], results[0].plot())
 
-    def check_and_draw_collision(self, result, original_frame):
-        boxes = result.boxes
+    def check_collision(self, results, original_frame):
+        boxes = results.boxes
         for box in boxes:
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            width, height = x2 - x1, y2 - y1
-            center_x, center_y = x1 + width // 2, y1 + height // 2
-            center_point = (center_x, center_y)
-            cv2.circle(original_frame, center_point, 7, (88, 85, 232), -1)
+            center_x, center_y = self.get_center_point(box)
+            self.draw_center_point(original_frame, center_x, center_y)
             if box.id is not None and self.is_point_inside_line(center_x, center_y, int(box.id.item())):
-                plate_image = Image.fromarray(result.orig_img[y1:y2, x1:x2])
-                plate_text = extract_text_from_plate(plate_image, pre_processing=True)
-                if plate_text:
-                    print(f"Placa: {plate_text}")
-                cv2.rectangle(original_frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                cv2.putText(original_frame, f"Placa: {plate_text}", (0, 200), cv2.FONT_HERSHEY_SIMPLEX, 0.9,
-                            (0, 0, 255), 2)
-                cv2.imshow("Captured Plate", original_frame)
+                self.draw_collision(original_frame, box)
 
-        return original_frame
-
-    def draw_visualization_elements(self, result, original_frame):
+    def draw_visualization_elements(self, results, original_frame):
         self.draw_line(original_frame)
-        self.check_and_draw_collision(result, original_frame)
+        self.check_collision(results, original_frame)
         return original_frame
 
     def visualize(self):
         Prediction.check_gpu()
-        cap = cv2.VideoCapture(self.data["video_source"])
+        capture = cv2.VideoCapture(self.data["video_source"])
         paused = False
-
-        while cap.isOpened():
+        while capture.isOpened():
             if not paused:
-                success, frame = cap.read()
+                success, frame = capture.read()
                 if not success:
                     break
                 annotated_frame = self._process_frame(frame)
                 cv2.imshow("YOLOv8 Inference", annotated_frame)
-
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
                 break
             elif key == ord("p"):
                 paused = not paused
-
-        cap.release()
+        capture.release()
         cv2.destroyAllWindows()
         cv2.waitKey(1)
 
@@ -113,7 +146,8 @@ class Prediction:
         Prediction.check_gpu()
         directory = self.data["directory"]
         object_indices = self.data["object_indices"]
-        results = self.model.track(self.data["video_source"], stream=True, iou=0.5, classes=object_indices, conf=0.5)
+        results = self.pre_trained_model.track(self.data["video_source"], stream=True, iou=0.5, classes=object_indices,
+                                               conf=0.5)
         for result in results:
             boxes = result.boxes
             for box in boxes:
