@@ -41,8 +41,8 @@ class Prediction:
     def __init__(self, plate_model, pre_treined_model, data: dict):
         self.pre_trained_model = pre_treined_model
         self.data = data
-        self.captured_ids = set()
-        self.last_capture = time.time()
+        self.id_blacklist = set()
+        self.last_capture = 0
         self.plate_model = plate_model
 
     @staticmethod
@@ -54,20 +54,24 @@ class Prediction:
         else:
             print("GPU not available. Starting with CPU.")
 
-    def is_point_inside_line(self, center_x, center_y, track_id):
+    def validate_collision(self, center_x, center_y, track_id):
+        entry = self.data["entry"]
         line_x1, line_y1, line_x2, line_y2 = self.data["line"]
+        if center_y < line_y1 - 50 and entry:
+            self.id_blacklist.add(track_id)
+        if center_y > line_y1 + 50 and not entry:
+            self.id_blacklist.add(track_id)
         is_inside_line = line_x1 < center_x < line_x2 and line_y1 - 15 < center_y < line_y1 + 15
-        self.handle_capture_flush()
-        if is_inside_line and track_id not in self.captured_ids:
-            self.captured_ids.add(track_id)
-            self.last_capture = time.time()
+        if is_inside_line and track_id not in self.id_blacklist:
             return True
 
         return False
 
-    def handle_capture_flush(self):
+    def handle_capture(self, original_frame, box):
+        print(time.time() - self.last_capture)
         if time.time() - self.last_capture > 2:
-            self.captured_ids.clear()
+            self.draw_collision(original_frame, box)
+            self.last_capture = time.time()
 
     def draw_line(self, frame):
         cv2.line(frame, (self.data["line"][0], self.data["line"][1]),
@@ -117,12 +121,13 @@ class Prediction:
         return self.draw_visualization_elements(results[0], results[0].plot())
 
     def check_collision(self, results, original_frame):
+        print(self.id_blacklist)
         boxes = results.boxes
         for box in boxes:
             center_x, center_y = self.get_center_point(box)
             self.draw_center_point(original_frame, center_x, center_y)
-            if box.id is not None and self.is_point_inside_line(center_x, center_y, int(box.id.item())):
-                self.draw_collision(original_frame, box)
+            if box.id is not None and self.validate_collision(center_x, center_y, int(box.id.item())):
+                self.handle_capture(original_frame, box)
 
     def draw_visualization_elements(self, results, original_frame):
         self.draw_line(original_frame)
@@ -161,7 +166,7 @@ class Prediction:
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 width, height = x2 - x1, y2 - y1
                 center_x, center_y = x1 + width // 2, y1 + height // 2
-                if box.id is not None and self.is_point_inside_line(center_x, center_y, int(box.id.item())):
+                if box.id is not None and self.validate_collision(center_x, center_y, int(box.id.item())):
                     im = Image.fromarray(result.orig_img)
                     plate_image = Image.fromarray(result.orig_img[y1:y2, x1:x2])
                     plate_text = extract_text_from_plate(plate_image)
