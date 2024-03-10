@@ -1,3 +1,4 @@
+import datetime
 import time
 import cv2
 import numpy as np
@@ -6,6 +7,7 @@ import uuid as uid
 from PIL import Image
 import pytesseract
 import easyocr
+from req import plate_post_request
 
 
 def pre_process_plate_image(plate_image):
@@ -15,12 +17,26 @@ def pre_process_plate_image(plate_image):
     :param plate_image: Imagem da placa
     :return: Retorna a imagem pre-processada
     """
-
     plate_image = cv2.cvtColor(plate_image, cv2.COLOR_BGR2GRAY)
-    plate_image = cv2.threshold(plate_image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
-    plate_image = cv2.medianBlur(plate_image, 3)
     plate_image = cv2.resize(plate_image, (0, 0), fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
     return plate_image
+
+
+def post_process_plate_text(plate_text, ocr):
+    """
+    Pós-processa o texto extraido do OCR
+    """
+    if not plate_text:
+        return f"{ocr} nao conseguiu ler a placa"
+    plate_text = plate_text.replace(" ", "")
+    plate_text = plate_text.replace("\n", "")
+    plate_text = plate_text.replace("\x0c", "")
+    for char in plate_text:
+        if not char.isalpha() and not char.isdigit():
+            return f"{ocr} Problema na leitura da placa | Leitura: " + plate_text
+    if len(plate_text) != 7:
+        return f"{ocr} Leitura mal sucedida | Leitura: " + plate_text
+    return plate_text
 
 
 def tesseract_read(plate_image):
@@ -30,8 +46,10 @@ def tesseract_read(plate_image):
     :param plate_image: Imagem da placa
     :return: Retorna o texto extraído da placa
     """
-    return pytesseract.image_to_string(plate_image,
-                                       config="--psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+    plate_text = pytesseract.image_to_string(plate_image,
+                                             config="--psm 6 -c tessedit_char_whitelist="
+                                                    "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+    return post_process_plate_text(plate_text, "Tesseract")
 
 
 def easy_ocr_read(plate_image):
@@ -42,8 +60,10 @@ def easy_ocr_read(plate_image):
     :return: Retorna o texto extraído da placa
     """
     reader = easyocr.Reader(['en'], gpu=True)
-    return reader.readtext(plate_image, detail=0, paragraph=True, batch_size=1, workers=0,
-                           allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+    result = reader.readtext(plate_image, detail=0, paragraph=True, batch_size=1, workers=0,
+                             allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+    if result:
+        return post_process_plate_text(result[0][1], "EasyOCR")
 
 
 def handle_ocr(plate_image, pre_processing=False):
@@ -58,9 +78,16 @@ def handle_ocr(plate_image, pre_processing=False):
     if pre_processing:
         plate_image = pre_process_plate_image(plate_image)
     cv2.imshow("Plate", plate_image)
-    result = tesseract_read(plate_image)
-    if result:
-        return result
+    try:
+        result = tesseract_read(plate_image)
+        if result == "Tesseract nao conseguiu ler a placa":
+            return easy_ocr_read(plate_image)
+        if result:
+            return result
+    except pytesseract.TesseractNotFoundError as e:
+        print(e)
+        print("Tesseract não encontrado. Utilizando EasyOCR")
+        return easy_ocr_read(plate_image)
 
 
 class Prediction:
@@ -166,19 +193,21 @@ class Prediction:
         """
         vehicle_type = self.pre_trained_model.names[int(box.cls[0])]
         plate_results = self.plate_model(original_frame)
+        plate_text = ""
         for plate_result in plate_results:
             boxes = plate_result.boxes
             for plate_box in boxes:
                 if self.is_plate_inside_vehicle(plate_box, box):
                     plate_x1, plate_y1, plate_x2, plate_y2 = self.get_coords(plate_box)
                     plate_image = Image.fromarray(plate_result.orig_img[plate_y1:plate_y2, plate_x1:plate_x2])
-                    plate_text = handle_ocr(plate_image, pre_processing=True)
-                    if not plate_text:
-                        plate_text = "Placa não identificada"
+                    plate_text = handle_ocr(plate_image, pre_processing=self.data["pre_processing"])
                     cv2.putText(original_frame, f"Placa: {plate_text} Vehicle type: {vehicle_type}", (0, 200),
                                 cv2.FONT_HERSHEY_SIMPLEX,
-                                1, (0, 255, 0), 2)
+                                1, (139, 0, 0), 2)
         cv2.imshow("Capture", original_frame)
+        plate_post_request(
+            {"plate": plate_text, "vehicle": vehicle_type, "type": "entry" if self.data["entry"] else "exit",
+             "photo": "photo_id", "date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
 
     @staticmethod
     def get_coords(box):

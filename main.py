@@ -8,7 +8,8 @@ if __name__ == '__main__':
         "line": [100, 220, 1800, 220],
         "object_indices": vehicle_indexes,
         "directory": "results/results22",
-        "entry": True
+        "entry": True,
+        "pre_processing": True
     }
     pre_trained = YOLO('models/weights/yolov8s.pt')
     plate_model = YOLO('models/custom_plate/treino5.pt')
