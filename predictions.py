@@ -1,5 +1,4 @@
 import datetime
-import time
 import cv2
 import numpy as np
 import torch
@@ -99,8 +98,9 @@ class Prediction:
         self.pre_trained_model = pre_treined_model
         self.data = data
         self.id_blacklist = set()
-        self.last_capture = 0
+        self.last_capture = None
         self.plate_model = plate_model
+        self.frame = 0
 
     @staticmethod
     def check_gpu():
@@ -145,9 +145,14 @@ class Prediction:
         :param box: Caixa delimitadora do objeto
         :return: None
         """
-        if time.time() - self.last_capture > 2:
+        if self.last_capture is None:
             self.draw_capture(original_frame, box)
-            self.last_capture = time.time()
+            self.last_capture = self.frame
+            return
+        if self.frame - self.last_capture > 10:
+            print("captura realizada")
+            self.draw_capture(original_frame, box)
+            self.last_capture = self.frame
 
     def draw_line(self, frame):
         """
@@ -205,9 +210,10 @@ class Prediction:
                                 cv2.FONT_HERSHEY_SIMPLEX,
                                 1, (139, 0, 0), 2)
         cv2.imshow("Capture", original_frame)
-        plate_post_request(
-            {"plate": plate_text, "vehicle": vehicle_type, "type": "entry" if self.data["entry"] else "exit",
-             "photo": "photo_id", "date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+        if self.data["send_post"]:
+            plate_post_request(
+                {"plate": plate_text, "vehicle": vehicle_type, "type": "entry" if self.data["entry"] else "exit",
+                 "photo": "photo_id", "date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
 
     @staticmethod
     def get_coords(box):
@@ -241,6 +247,7 @@ class Prediction:
         """
         results = self.pre_trained_model.track(frame, classes=self.data["object_indices"], conf=0.6, iou=0.5,
                                                persist=True)
+        self.frame += 1
         return self.draw_visualization_elements(results[0], results[0].plot())
 
     def check_collision(self, results, original_frame):

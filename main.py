@@ -9,7 +9,8 @@ if __name__ == '__main__':
         "object_indices": vehicle_indexes,
         "directory": "results/results22",
         "entry": True,
-        "pre_processing": True
+        "pre_processing": True,
+        "send_post": False
     }
     pre_trained = YOLO('models/weights/yolov8s.pt')
     plate_model = YOLO('models/custom_plate/treino5.pt')
