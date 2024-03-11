@@ -2,7 +2,6 @@ import datetime
 import cv2
 import numpy as np
 import torch
-import uuid as uid
 from PIL import Image
 import pytesseract
 import easyocr
@@ -65,18 +64,20 @@ def easy_ocr_read(plate_image):
         return post_process_plate_text(result[0][1], "EasyOCR")
 
 
-def handle_ocr(plate_image, pre_processing=False):
+def handle_ocr(plate_image, preview, pre_processing=False, ):
     """
     Gerencia a leitura da placa utilizando o Tesseract OCR ou EasyOCR com opção de pré-processamento da imagem
 
     :param plate_image: Imagem da placa no formato PIL
     :param pre_processing: Opção de pré-processamento da imagem
+    :param preview: Opção de visualização das imagens
     :return: Retorna o texto extraído da placa
     """
     plate_image = np.array(plate_image)
     if pre_processing:
         plate_image = pre_process_plate_image(plate_image)
-    cv2.imshow("Plate", plate_image)
+        if preview:
+            cv2.imshow("Pre-processed plate", plate_image)
     try:
         result = tesseract_read(plate_image)
         if result == "Tesseract nao conseguiu ler a placa":
@@ -150,7 +151,6 @@ class Prediction:
             self.last_capture = self.frame
             return
         if self.frame - self.last_capture > 10:
-            print("captura realizada")
             self.draw_capture(original_frame, box)
             self.last_capture = self.frame
 
@@ -188,6 +188,26 @@ class Prediction:
         """
         cv2.circle(frame, (center_x, center_y), 5, (0, 255, 0), -1)
 
+    def send_plate_post_request(self, plate_text, vehicle_type):
+        """
+        Envia uma requisição POST com os dados da placa e do veículo
+
+        :param plate_text: Texto extraído da placa
+        :param vehicle_type: Tipo do veículo
+        :return: None
+        """
+        print(f"Post sended, plate: {plate_text} vehicle: {vehicle_type}")
+        response = plate_post_request(
+            {"plate": plate_text, "vehicle": vehicle_type, "type": "entry" if self.data["entry"] else "exit",
+             "photo": "photo_id", "date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+        print(response)
+
+    @staticmethod
+    def draw_plate_details(original_frame, plate_text, vehicle_type):
+        cv2.putText(original_frame, f"Placa: {plate_text} Vehicle type: {vehicle_type}", (0, 200),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1, (139, 0, 0), 2)
+
     def draw_capture(self, original_frame, box):
         """
         Desenha os elementos visuais quando uma captura é realizada
@@ -205,15 +225,15 @@ class Prediction:
                 if self.is_plate_inside_vehicle(plate_box, box):
                     plate_x1, plate_y1, plate_x2, plate_y2 = self.get_coords(plate_box)
                     plate_image = Image.fromarray(plate_result.orig_img[plate_y1:plate_y2, plate_x1:plate_x2])
-                    plate_text = handle_ocr(plate_image, pre_processing=self.data["pre_processing"])
-                    cv2.putText(original_frame, f"Placa: {plate_text} Vehicle type: {vehicle_type}", (0, 200),
-                                cv2.FONT_HERSHEY_SIMPLEX,
-                                1, (139, 0, 0), 2)
-        cv2.imshow("Capture", original_frame)
+                    plate_text = handle_ocr(plate_image, preview=self.data["preview"],
+                                            pre_processing=self.data["pre_processing"])
+                    if self.data["preview"]:
+                        cv2.imshow("Plate", np.array(plate_image))
+                        self.draw_plate_details(original_frame, plate_text, vehicle_type)
+        if self.data["preview"]:
+            cv2.imshow("Capture", original_frame)
         if self.data["send_post"]:
-            plate_post_request(
-                {"plate": plate_text, "vehicle": vehicle_type, "type": "entry" if self.data["entry"] else "exit",
-                 "photo": "photo_id", "date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+            self.send_plate_post_request(plate_text, vehicle_type)
 
     @staticmethod
     def get_coords(box):
@@ -246,23 +266,28 @@ class Prediction:
         :return: Retorna o frame com os elementos visuais da detecção de objetos
         """
         results = self.pre_trained_model.track(frame, classes=self.data["object_indices"], conf=0.6, iou=0.5,
-                                               persist=True)
+                                               persist=True, stream=not self.data["preview"])
         self.frame += 1
+        if not self.data["preview"]:
+            for result in results:
+                self.check_collision(result, result.plot())
+            return
         return self.draw_visualization_elements(results[0], results[0].plot())
 
-    def check_collision(self, results, original_frame):
+    def check_collision(self, result, original_frame):
         """
         Verifica se houve colisão com a linha de captura e chama o gerenciador de captura
 
-        :param results: Resultados da detecção de objetos
+        :param result: Resultados da detecção de objetos
         :param original_frame: Frame original
         :return: None
         """
         print(self.id_blacklist)
-        boxes = results.boxes
+        boxes = result.boxes
         for box in boxes:
             center_x, center_y = self.get_center_point(box)
-            self.draw_center_point(original_frame, center_x, center_y)
+            if self.data["preview"]:
+                self.draw_center_point(original_frame, center_x, center_y)
             if box.id is not None and self.validate_collision(center_x, center_y, int(box.id.item())):
                 self.handle_capture(original_frame, box)
 
@@ -278,53 +303,30 @@ class Prediction:
         self.check_collision(results, original_frame)
         return original_frame
 
-    def visualize(self):
+    def predict(self):
         """
         Inicia a visualização do vídeo com a detecção de objetos
 
         :return: None
         """
         Prediction.check_gpu()
-        capture = cv2.VideoCapture(self.data["video_source"])
-        paused = False
-        while capture.isOpened():
-            if not paused:
-                success, frame = capture.read()
-                if not success:
+        if self.data["preview"]:
+            capture = cv2.VideoCapture(self.data["video_source"])
+            paused = False
+            while capture.isOpened():
+                if not paused:
+                    success, frame = capture.read()
+                    if not success:
+                        break
+                    annotated_frame = self._process_frame(frame)
+                    cv2.imshow("YOLOv8 Inference", annotated_frame)
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord("q"):
                     break
-                annotated_frame = self._process_frame(frame)
-                cv2.imshow("YOLOv8 Inference", annotated_frame)
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord("q"):
-                break
-            elif key == ord("p"):
-                paused = not paused
-        capture.release()
-        cv2.destroyAllWindows()
-        cv2.waitKey(1)
-
-    def simple_track_and_capture(self):
-        """
-        Realiza a detecção de objetos e captura a imagem em um determinado diretório
-
-        :return: None
-        """
-        Prediction.check_gpu()
-        directory = self.data["directory"]
-        object_indices = self.data["object_indices"]
-        results = self.pre_trained_model.track(self.data["video_source"], stream=True, iou=0.5, classes=object_indices,
-                                               conf=0.5)
-        for result in results:
-            boxes = result.boxes
-            for box in boxes:
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
-                width, height = x2 - x1, y2 - y1
-                center_x, center_y = x1 + width // 2, y1 + height // 2
-                if box.id is not None and self.validate_collision(center_x, center_y, int(box.id.item())):
-                    im = Image.fromarray(result.orig_img)
-                    plate_image = Image.fromarray(result.orig_img[y1:y2, x1:x2])
-                    plate_text = handle_ocr(plate_image)
-                    if plate_text:
-                        print(f"Placa: {plate_text}")
-                    im.save(f'{directory}/{uid.uuid4()}.jpg')
-                    print("captura realizada")
+                elif key == ord("p"):
+                    paused = not paused
+            capture.release()
+            cv2.destroyAllWindows()
+            cv2.waitKey(1)
+        else:
+            self._process_frame(self.data["video_source"])
