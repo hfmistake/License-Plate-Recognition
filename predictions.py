@@ -1,3 +1,4 @@
+import base64
 import datetime
 import cv2
 import numpy as np
@@ -138,20 +139,21 @@ class Prediction:
 
         return False
 
-    def handle_capture(self, original_frame, box):
+    def handle_capture(self, original_frame, box, result):
         """
         Verifica se uma captura não foi realizada recentemente para evitar capturas duplicadas
 
+        :param result: Resultados da detecção de objetos
         :param original_frame:  Frame original
         :param box: Caixa delimitadora do objeto
         :return: None
         """
         if self.last_capture is None:
-            self.draw_capture(original_frame, box)
+            self.draw_capture(result, original_frame, box)
             self.last_capture = self.frame
             return
         if self.frame - self.last_capture > 10:
-            self.draw_capture(original_frame, box)
+            self.draw_capture(result, original_frame, box)
             self.last_capture = self.frame
 
     def draw_line(self, frame):
@@ -188,19 +190,23 @@ class Prediction:
         """
         cv2.circle(frame, (center_x, center_y), 5, (0, 255, 0), -1)
 
-    def send_plate_post_request(self, plate_text, vehicle_type):
+    def send_plate_post_request(self, plate_text, vehicle_type, vehicle_photo):
         """
         Envia uma requisição POST com os dados da placa e do veículo
 
+        :param vehicle_photo: Foto do veículo
         :param plate_text: Texto extraído da placa
         :param vehicle_type: Tipo do veículo
         :return: None
         """
+        _, buffer = cv2.imencode('.jpg', vehicle_photo)
+        base64_photo = base64.b64encode(buffer).decode('utf-8')
         print(f"Post sended, plate: {plate_text} vehicle: {vehicle_type}")
         response = plate_post_request(
             {"plate": plate_text, "vehicle": vehicle_type, "type": "entry" if self.data["entry"] else "exit",
-             "photo": "photo_id", "date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
-        print(response)
+             "photo": base64_photo, "date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+        if response:
+            print(response)
 
     @staticmethod
     def draw_plate_details(original_frame, plate_text, vehicle_type):
@@ -208,14 +214,17 @@ class Prediction:
                     cv2.FONT_HERSHEY_SIMPLEX,
                     1, (139, 0, 0), 2)
 
-    def draw_capture(self, original_frame, box):
+    def draw_capture(self, result, original_frame, box):
         """
         Desenha os elementos visuais quando uma captura é realizada
 
+        :param result: Resultados da detecção de objetos
         :param original_frame: Frame original
         :param box: Caixa delimitadora do objeto
         :return: None
         """
+        x1, y1, x2, y2 = self.get_coords(box)
+        vehicle_photo = result.orig_img[y1:y2, x1:x2]
         vehicle_type = self.pre_trained_model.names[int(box.cls[0])]
         plate_results = self.plate_model(original_frame)
         plate_text = ""
@@ -233,7 +242,7 @@ class Prediction:
         if self.data["preview"]:
             cv2.imshow("Capture", original_frame)
         if self.data["send_post"]:
-            self.send_plate_post_request(plate_text, vehicle_type)
+            self.send_plate_post_request(plate_text, vehicle_type, vehicle_photo)
 
     @staticmethod
     def get_coords(box):
@@ -258,14 +267,14 @@ class Prediction:
         center_x, center_y = x1 + width // 2, y1 + height // 2
         return center_x, center_y
 
-    def _process_frame(self, frame):
+    def _process_frame(self, video_source):
         """
         Processa o frame com utilizando o model para realizar a detecção de objetos
 
-        :param frame: Frame original
+        :param video_source: Fonte do vídeo
         :return: Retorna o frame com os elementos visuais da detecção de objetos
         """
-        results = self.pre_trained_model.track(frame, classes=self.data["object_indices"], conf=0.6, iou=0.5,
+        results = self.pre_trained_model.track(video_source, classes=self.data["object_indices"], conf=0.6, iou=0.5,
                                                persist=True, stream=not self.data["preview"])
         self.frame += 1
         if not self.data["preview"]:
@@ -289,7 +298,7 @@ class Prediction:
             if self.data["preview"]:
                 self.draw_center_point(original_frame, center_x, center_y)
             if box.id is not None and self.validate_collision(center_x, center_y, int(box.id.item())):
-                self.handle_capture(original_frame, box)
+                self.handle_capture(original_frame, box, result)
 
     def draw_visualization_elements(self, results, original_frame):
         """
