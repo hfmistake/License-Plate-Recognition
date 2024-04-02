@@ -18,6 +18,8 @@ def pre_process_plate_image(plate_image):
     """
     plate_image = cv2.cvtColor(plate_image, cv2.COLOR_BGR2GRAY)
     plate_image = cv2.resize(plate_image, (0, 0), fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+    plate_image = cv2.medianBlur(plate_image, 3)
+    plate_image = cv2.threshold(plate_image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
     return plate_image
 
 
@@ -32,9 +34,9 @@ def post_process_plate_text(plate_text, ocr):
     plate_text = plate_text.replace("\x0c", "")
     for char in plate_text:
         if not char.isalpha() and not char.isdigit():
-            return f"{ocr} Problema na leitura da placa | Leitura: " + plate_text
+            return f"{ocr} Problema na leitura da placa | Leitura: |{plate_text}|"
     if len(plate_text) != 7:
-        return f"{ocr} Leitura mal sucedida | Leitura: " + plate_text
+        return f"{ocr} Leitura mal sucedida | Leitura: |{plate_text}|"
     return plate_text
 
 
@@ -127,12 +129,10 @@ class Prediction:
         :param track_id: Id de rastreamento do objeto
         :return: Retorna True se o objeto colidir com a linha de captura
         """
-        entry = self.data["entry"]
         line_x1, line_y1, line_x2, line_y2 = self.data["line"]
-        if center_y < line_y1 - 50 and entry:
+        if center_y < line_y1 - 50:
             self.id_blacklist.add(track_id)
-        if center_y > line_y1 + 50 and not entry:
-            self.id_blacklist.add(track_id)
+
         is_inside_line = line_x1 < center_x < line_x2 and line_y1 - 15 < center_y < line_y1 + 15
         if is_inside_line and track_id not in self.id_blacklist:
             return True
@@ -226,7 +226,7 @@ class Prediction:
         x1, y1, x2, y2 = self.get_coords(box)
         vehicle_photo = result.orig_img[y1:y2, x1:x2]
         vehicle_type = self.pre_trained_model.names[int(box.cls[0])]
-        plate_results = self.plate_model(original_frame)
+        plate_results = self.plate_model(result.orig_img)
         plate_text = ""
         for plate_result in plate_results:
             boxes = plate_result.boxes
