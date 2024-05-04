@@ -27,17 +27,32 @@ def post_process_plate_text(plate_text, ocr):
     """
     Pós-processa o texto extraido do OCR
     """
-    if not plate_text:
-        return f"{ocr} nao conseguiu ler a placa"
     plate_text = plate_text.replace(" ", "")
     plate_text = plate_text.replace("\n", "")
     plate_text = plate_text.replace("\x0c", "")
+    reader_data = {
+        "OCR": ocr,
+        "plate": plate_text,
+        "message": "",
+        "valid": None
+    }
+    if not plate_text:
+        reader_data["message"] = "Leitura mal sucedida: Placa não encontrada"
+        return reader_data
     for char in plate_text:
         if not char.isalpha() and not char.isdigit():
-            return f"{ocr} Problema na leitura da placa | Leitura: |{plate_text}|"
+            reader_data["message"] = "Leitura mal sucedida: Caracteres inválidos encontrados"
+            reader_data["valid"] = False
+            return reader_data
     if len(plate_text) != 7:
-        return f"{ocr} Leitura mal sucedida | Leitura: |{plate_text}|"
-    return plate_text
+        reader_data["valid"] = False
+        reader_data["message"] = "Leitura mal sucedida: Placa inválida"
+        return reader_data
+    reader_data["valid"] = True
+    reader_data[
+        "message"] = ("Leitura válida, chance de erro reduzida. OBS: Os caracteres obedecem o padrão de "
+                      "placas veiculares brasileiras. Porém pode haver divergências nos caracteres lidos.")
+    return reader_data
 
 
 def tesseract_read(plate_image):
@@ -83,10 +98,10 @@ def handle_ocr(plate_image, preview, pre_processing=False, ):
             cv2.imshow("Pre-processed plate", plate_image)
     try:
         result = tesseract_read(plate_image)
-        if result == "Tesseract nao conseguiu ler a placa":
+        if result["valid"] is None:
             return easy_ocr_read(plate_image)
-        if result:
-            return result
+        return result
+
     except pytesseract.TesseractNotFoundError as e:
         print(e)
         print("Tesseract não encontrado. Utilizando EasyOCR")
@@ -190,21 +205,26 @@ class Prediction:
         """
         cv2.circle(frame, (center_x, center_y), 5, (0, 255, 0), -1)
 
-    def send_plate_post_request(self, plate_text, vehicle_type, vehicle_photo):
+    def send_plate_post_request(self, reader_data, vehicle_type, vehicle_photo):
         """
         Envia uma requisição POST com os dados da placa e do veículo
 
         :param vehicle_photo: Foto do veículo
-        :param plate_text: Texto extraído da placa
+        :param reader_data: Dados da leitura da placa
         :param vehicle_type: Tipo do veículo
         :return: None
         """
         _, buffer = cv2.imencode('.jpg', vehicle_photo)
         base64_photo = base64.b64encode(buffer).decode('utf-8')
-        print(f"Post sended, plate: {plate_text} vehicle: {vehicle_type}")
-        response = plate_post_request(
-            {"plate": plate_text, "vehicle": vehicle_type, "type": "entry" if self.data["entry"] else "exit",
-             "photo": base64_photo, "date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+        data = {
+            "OCR": reader_data["OCR"],
+            "plate": reader_data["plate"],
+            "message": reader_data["message"],
+            "vehicle": vehicle_type,
+            "type": "entry" if self.data["entry"] else "exit",
+            "photo": base64_photo, "date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        response = plate_post_request(data)
         if response:
             print(response)
 
