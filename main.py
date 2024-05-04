@@ -9,7 +9,6 @@ if __name__ == '__main__':
         "video_source": "videos/9.mp4",
         "line": exit_line,
         "object_indices": vehicle_indexes,
-        "directory": "results/results22",
         "entry": False,
         "pre_processing": True,
         "send_post": False,
